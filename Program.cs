@@ -55,7 +55,8 @@ app.MapPost("/api/health-agent-tips", async (HealthAgentRequest request, HttpCon
     {
         var bearerToken = httpContext.Request.Headers.Authorization.ToString();
         var result = await agentService.GetHealthTipFromAgentAsync(request.Message, request.ThreadId, bearerToken, cancellationToken);
-        return Results.Ok(new HealthAgentResponse(result.Response, result.ThreadId));
+        var structured = FoundryAgentService.ParseStructuredAgentResponse(result.Response);
+        return Results.Ok(new HealthAgentResponse(structured.Type, structured.Message, result.ThreadId, result.Response));
     }
     catch (InvalidOperationException ex)
     {
@@ -73,5 +74,36 @@ app.MapPost("/api/health-agent-tips", async (HealthAgentRequest request, HttpCon
     }
 })
 .WithName("GetHealthAgentTips");
+
+app.MapGet("/api/health-agent-thread/{threadId}", async (string threadId, HttpContext httpContext, FoundryAgentService agentService, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(threadId))
+    {
+        return Results.BadRequest(new { error = "threadId is required." });
+    }
+
+    try
+    {
+        var bearerToken = httpContext.Request.Headers.Authorization.ToString();
+        var messages = await agentService.GetThreadMessagesAsync(threadId, bearerToken, cancellationToken);
+        var response = messages.Select(m => new HealthAgentThreadMessage(m.Role, m.Content, m.RunId, m.CreatedAtUtc));
+        return Results.Ok(response);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            title: "Configuration error",
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            title: "Failed to read Foundry thread messages",
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+})
+.WithName("GetHealthAgentThread");
 
 app.Run();

@@ -15,6 +15,49 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
     private readonly ILogger<FoundryAgentService> _logger = logger;
     private static readonly TokenCredential AgentCredential = new DefaultAzureCredential();
 
+    public static (string Type, string Message) ParseStructuredAgentResponse(string rawResponse)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return ("empty", string.Empty);
+        }
+
+        var trimmed = rawResponse.Trim();
+        var jsonPayload = ExtractJsonPayload(trimmed);
+        if (string.IsNullOrWhiteSpace(jsonPayload))
+        {
+            return ("text", trimmed);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonPayload);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return ("text", trimmed);
+            }
+
+            var type = root.TryGetProperty("type", out var typeElement)
+                ? typeElement.GetString()
+                : null;
+            var message = root.TryGetProperty("message", out var messageElement)
+                ? messageElement.GetString()
+                : null;
+
+            if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(message))
+            {
+                return ("text", trimmed);
+            }
+
+            return (type.Trim(), message.Trim());
+        }
+        catch
+        {
+            return ("text", trimmed);
+        }
+    }
+
     public async Task<string> GetHealthTipAsync(string userMessage, CancellationToken cancellationToken)
     {
         var endpoint = _configuration["Foundry:Endpoint"] ?? _configuration["AZURE_OPENAI_ENDPOINT"];
@@ -106,9 +149,40 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         await AddMessageAsync(baseUrl, apiVersion, accessToken, activeThreadId!, userMessage, cancellationToken);
         var runId = await CreateRunAsync(baseUrl, apiVersion, accessToken, activeThreadId!, agentId, cancellationToken);
         await WaitForRunCompletionAsync(baseUrl, apiVersion, accessToken, activeThreadId!, runId, cancellationToken);
-        var responseText = await GetLatestAssistantMessageAsync(baseUrl, apiVersion, accessToken, activeThreadId!, cancellationToken);
+        var responseText = await GetLatestAssistantMessageAsync(baseUrl, apiVersion, accessToken, activeThreadId!, runId, cancellationToken);
 
         return (responseText, activeThreadId!);
+    }
+
+    public async Task<IReadOnlyList<(string Role, string Content, string? RunId, DateTimeOffset? CreatedAtUtc)>> GetThreadMessagesAsync(
+        string threadId,
+        string? incomingBearerToken,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = _configuration["Foundry:ProjectEndpoint"] ??
+                       _configuration["Foundry:Endpoint"] ??
+                       _configuration["AZURE_OPENAI_ENDPOINT"];
+        var apiVersion = _configuration["Foundry:AgentApiVersion"] ??
+                         _configuration["Foundry:ApiVersion"] ??
+                         "v1";
+        var agentAuthScope = _configuration["Foundry:AgentAuthScope"] ?? "https://ai.azure.com/.default";
+
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            throw new InvalidOperationException(
+                "Missing Foundry endpoint settings. Provide Foundry:ProjectEndpoint (or Foundry:Endpoint) in appsettings, or AZURE_OPENAI_ENDPOINT as an environment variable.");
+        }
+
+        var (accessToken, authSource) = await GetAgentAccessTokenAsync(agentAuthScope, incomingBearerToken, cancellationToken);
+        LogTokenDiagnostics(accessToken, authSource, agentAuthScope);
+
+        var normalizedEndpoint = endpoint.TrimEnd('/');
+        var isProjectEndpoint = normalizedEndpoint.Contains("/api/projects/", StringComparison.OrdinalIgnoreCase);
+        var baseUrl = isProjectEndpoint
+            ? normalizedEndpoint
+            : $"{normalizedEndpoint}/openai";
+
+        return await GetThreadMessagesInternalAsync(baseUrl, apiVersion, accessToken, threadId, cancellationToken);
     }
 
     private async Task<(string Token, string Source)> GetAgentAccessTokenAsync(string scope, string? incomingBearerToken, CancellationToken cancellationToken)
@@ -404,6 +478,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         string apiVersion,
         string accessToken,
         string threadId,
+        string runId,
         CancellationToken cancellationToken)
     {
         var url = $"{baseUrl}/threads/{threadId}/messages?api-version={apiVersion}&order=desc&limit=20";
@@ -423,6 +498,52 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
             return "No response was returned by the agent.";
         }
 
+        foreach (var message in data.EnumerateArray())
+        {
+            var role = message.GetProperty("role").GetString();
+            if (!string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var messageRunId = message.TryGetProperty("run_id", out var runIdElement)
+                ? runIdElement.GetString()
+                : null;
+
+            if (!string.Equals(messageRunId, runId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!message.TryGetProperty("content", out var contentItems) || contentItems.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in contentItems.EnumerateArray())
+            {
+                if (!item.TryGetProperty("type", out var typeElement) ||
+                    !string.Equals(typeElement.GetString(), "text", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!item.TryGetProperty("text", out var textElement) ||
+                    !textElement.TryGetProperty("value", out var valueElement))
+                {
+                    continue;
+                }
+
+                var value = valueElement.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+        }
+
+        // Fallback: if the provider does not expose run_id in this API version,
+        // return the newest assistant message in the thread.
         foreach (var message in data.EnumerateArray())
         {
             var role = message.GetProperty("role").GetString();
@@ -461,11 +582,123 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         return "No response was returned by the agent.";
     }
 
+    private async Task<IReadOnlyList<(string Role, string Content, string? RunId, DateTimeOffset? CreatedAtUtc)>> GetThreadMessagesInternalAsync(
+        string baseUrl,
+        string apiVersion,
+        string accessToken,
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{baseUrl}/threads/{threadId}/messages?api-version={apiVersion}&order=asc&limit=100";
+        using var request = CreateAgentRequest(HttpMethod.Get, url, accessToken);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Foundry endpoint returned {(int)response.StatusCode}: {responseBody}");
+        }
+
+        using var doc = JsonDocument.Parse(responseBody);
+        if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<(string Role, string Content, string? RunId, DateTimeOffset? CreatedAtUtc)>();
+        }
+
+        var messages = new List<(string Role, string Content, string? RunId, DateTimeOffset? CreatedAtUtc)>();
+        foreach (var message in data.EnumerateArray())
+        {
+            var role = message.TryGetProperty("role", out var roleElement)
+                ? roleElement.GetString() ?? "unknown"
+                : "unknown";
+            var runId = message.TryGetProperty("run_id", out var runIdElement)
+                ? runIdElement.GetString()
+                : null;
+
+            DateTimeOffset? createdAtUtc = null;
+            if (message.TryGetProperty("created_at", out var createdAtElement) && createdAtElement.TryGetInt64(out var createdAtUnix))
+            {
+                createdAtUtc = DateTimeOffset.FromUnixTimeSeconds(createdAtUnix).ToUniversalTime();
+            }
+
+            if (!message.TryGetProperty("content", out var contentItems) || contentItems.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in contentItems.EnumerateArray())
+            {
+                if (!item.TryGetProperty("type", out var typeElement) ||
+                    !string.Equals(typeElement.GetString(), "text", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!item.TryGetProperty("text", out var textElement) ||
+                    !textElement.TryGetProperty("value", out var valueElement))
+                {
+                    continue;
+                }
+
+                var value = valueElement.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    messages.Add((role, value.Trim(), runId, createdAtUtc));
+                }
+            }
+        }
+
+        return messages;
+    }
+
     private static HttpRequestMessage CreateAgentRequest(HttpMethod method, string url, string accessToken)
     {
         var request = new HttpRequestMessage(method, url);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         return request;
+    }
+
+    private static string? ExtractJsonPayload(string text)
+    {
+        if (text.StartsWith("{") && text.EndsWith("}"))
+        {
+            return text;
+        }
+
+        var jsonFenceStart = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
+        if (jsonFenceStart >= 0)
+        {
+            var fenceContentStart = text.IndexOf('\n', jsonFenceStart);
+            if (fenceContentStart >= 0)
+            {
+                var jsonFenceEnd = text.IndexOf("```", fenceContentStart + 1, StringComparison.OrdinalIgnoreCase);
+                if (jsonFenceEnd > fenceContentStart)
+                {
+                    return text[(fenceContentStart + 1)..jsonFenceEnd].Trim();
+                }
+            }
+        }
+
+        var genericFenceStart = text.IndexOf("```", StringComparison.OrdinalIgnoreCase);
+        if (genericFenceStart >= 0)
+        {
+            var fenceContentStart = text.IndexOf('\n', genericFenceStart);
+            if (fenceContentStart >= 0)
+            {
+                var genericFenceEnd = text.IndexOf("```", fenceContentStart + 1, StringComparison.OrdinalIgnoreCase);
+                if (genericFenceEnd > fenceContentStart)
+                {
+                    var fencedContent = text[(fenceContentStart + 1)..genericFenceEnd].Trim();
+                    if (fencedContent.StartsWith("{") && fencedContent.EndsWith("}"))
+                    {
+                        return fencedContent;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 }

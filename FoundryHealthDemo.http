@@ -20,6 +20,11 @@ Content-Type: application/json
 
 ###
 
+GET {{FoundryHealthDemo_HostAddress}}/api/health-agent-thread/<paste-thread-id>
+Accept: application/json
+
+###
+
 POST {{FoundryHealthDemo_HostAddress}}/api/health-agent-tips
 Accept: application/json
 Content-Type: application/json
