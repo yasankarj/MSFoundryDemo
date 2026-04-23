@@ -30,6 +30,8 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         {
             messages = new object[]
             {
+                new { role = "system", content = "You are a helpful health and wellness assistant. Give safe, practical, non-diagnostic health tips. Keep responses concise and include a short disclaimer that this is not medical advice. If the user mentions a health condition, do not diagnose it. Just provide general advice." },
+                new { role = "system", content = "If user asks questions not related to health, politely decline and ask them to focus on health topics." },
                 new { role = "user", content = userMessage }
             },
             temperature = 0.7,
