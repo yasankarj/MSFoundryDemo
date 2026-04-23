@@ -1,0 +1,11 @@
+@FoundryHealthDemo_HostAddress = http://localhost:5105
+
+POST {{FoundryHealthDemo_HostAddress}}/api/health-tips
+Accept: application/json
+Content-Type: application/json
+
+{
+  "message": "Seems I have a cancer"
+}
+
+###
