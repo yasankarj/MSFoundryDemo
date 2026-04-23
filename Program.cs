@@ -44,4 +44,34 @@ app.MapPost("/api/health-tips", async (HealthTipRequest request, FoundryAgentSer
 })
 .WithName("GetHealthTips");
 
+app.MapPost("/api/health-agent-tips", async (HealthAgentRequest request, HttpContext httpContext, FoundryAgentService agentService, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Message))
+    {
+        return Results.BadRequest(new { error = "message is required." });
+    }
+
+    try
+    {
+        var bearerToken = httpContext.Request.Headers.Authorization.ToString();
+        var result = await agentService.GetHealthTipFromAgentAsync(request.Message, request.ThreadId, bearerToken, cancellationToken);
+        return Results.Ok(new HealthAgentResponse(result.Response, result.ThreadId));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            title: "Configuration error",
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            title: "Failed to call Foundry agent endpoint",
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+})
+.WithName("GetHealthAgentTips");
+
 app.Run();

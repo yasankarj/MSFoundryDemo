@@ -9,3 +9,24 @@ Content-Type: application/json
 }
 
 ###
+
+POST {{FoundryHealthDemo_HostAddress}}/api/health-agent-tips
+Accept: application/json
+Content-Type: application/json
+
+{
+  "message": "I sit all day for work. Give me 3 practical health tips."
+}
+
+###
+
+POST {{FoundryHealthDemo_HostAddress}}/api/health-agent-tips
+Accept: application/json
+Content-Type: application/json
+
+{
+  "threadId": "<paste-thread-id-from-previous-response>",
+  "message": "Now make those tips fit into 5-minute breaks."
+}
+
+###
