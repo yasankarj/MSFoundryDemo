@@ -1,0 +1,153 @@
+{
+  "info": {
+    "_postman_id": "523251d6-5029-4267-b75b-73864a3fb116",
+    "name": "Foundry Demo",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "1799857"
+  },
+  "item": [
+    {
+      "name": "Health Tips",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"message\": \"What should be the ideal politcal party\"\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/health-tips",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "health-tips"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Health Tips by Agent",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{dev-access-token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"message\": \"I had a BP readings 135/85, 120/81, 117/77.\"\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/health-agent-tips",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "health-agent-tips"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Threads",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{dev-access-token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"message\": \"I had a BP readings 135/85, 120/81, 117/77.\"\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/health-agent-thread/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "health-agent-thread",
+            ""
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": ""
+    },
+    {
+      "key": "dev-access-token",
+      "value": ""
+    },
+    {
+      "key": "thread_id",
+      "value": ""
+    }
+  ]
+}
