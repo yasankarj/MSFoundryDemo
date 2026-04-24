@@ -1,11 +1,17 @@
 # Foundry Health Tips API (.NET)
 
-This project exposes a demo API endpoint for a health-tips agent powered by Azure Foundry / Azure OpenAI.
+This project exposes demo endpoints for:
 
-## Endpoint
+- direct model chat completions
+- Azure AI Foundry Agent (threaded conversations with `threadId`)
 
-- `POST /api/health-tips`
-- Request body:
+## Endpoints
+
+### `POST /api/health-tips`
+
+Direct model call via deployment chat completions.
+
+Request:
 
 ```json
 {
@@ -13,7 +19,7 @@ This project exposes a demo API endpoint for a health-tips agent powered by Azur
 }
 ```
 
-- Response body:
+Response:
 
 ```json
 {
@@ -21,14 +27,84 @@ This project exposes a demo API endpoint for a health-tips agent powered by Azur
 }
 ```
 
-## Required environment variables
+### `POST /api/health-agent-tips`
 
-Set these before running:
+Calls a pre-created Foundry Agent (`HealthAgentID`) using threads + runs.
 
-- `AZURE_OPENAI_ENDPOINT` (example: `https://<your-resource>.openai.azure.com`)
-- `AZURE_OPENAI_API_KEY`
-- `AZURE_OPENAI_DEPLOYMENT` (your model deployment name in Foundry/Azure OpenAI)
-- `AZURE_OPENAI_API_VERSION` (optional, default: `2024-02-15-preview`)
+Request (new conversation):
+
+```json
+{
+  "message": "I sit all day for work. Give me 3 practical health tips."
+}
+```
+
+Request (continue conversation):
+
+```json
+{
+  "threadId": "<thread-id-from-previous-response>",
+  "message": "Now make those tips fit into 5-minute breaks."
+}
+```
+
+Response:
+
+```json
+{
+  "type": "ignored",
+  "message": "I cannot predict a doctor's opinion or provide a medical diagnosis. It's best to consult your doctor for a professional assessment based on your readings and overall health.",
+  "threadId": "thread_...",
+  "rawResponse": "```json\n{\n  \"type\": \"ignored\",\n  \"message\": \"...\"\n}\n```"
+}
+```
+
+Notes:
+
+- `threadId` is required for multi-turn continuity.
+- `rawResponse` is included for debugging/auditing original model output.
+- API attempts to parse structured JSON from plain JSON or fenced ` ```json ` blocks.
+
+### `GET /api/health-agent-thread/{threadId}`
+
+Debug endpoint to inspect stored messages in a thread.
+
+Useful to verify whether context is present when troubleshooting memory/continuity issues.
+
+## Configuration
+
+### Direct model endpoint config
+
+- `Foundry:Endpoint` (or `AZURE_OPENAI_ENDPOINT`)
+- `Foundry:ApiKey` (or `AZURE_OPENAI_API_KEY`)
+- `Foundry:Deployment` (or `AZURE_OPENAI_DEPLOYMENT`)
+- `Foundry:ApiVersion` (or `AZURE_OPENAI_API_VERSION`, default `2024-02-15-preview`)
+
+### Agent endpoint config
+
+- `Foundry:ProjectEndpoint` (recommended) or `Foundry:Endpoint`
+- `Foundry:HealthAgentID`
+- `Foundry:AgentApiVersion` (recommended `v1`)
+- `Foundry:AgentAuthScope` (default `https://ai.azure.com/.default`)
+
+## Agent authentication behavior
+
+For `/api/health-agent-tips` and `/api/health-agent-thread/{threadId}`, auth token selection order is:
+
+1. Incoming request `Authorization: Bearer ...`
+   - if token audience is already `https://ai.azure.com`, pass-through is used
+   - otherwise OBO (On-Behalf-Of) is attempted
+2. Configured token (`Foundry:AgentAccessToken`, `AZURE_FOUNDRY_AGENT_ACCESS_TOKEN`, `AzureAd:AccessToken`)
+3. `DefaultAzureCredential`
+
+### OBO prerequisites
+
+To exchange an app token (for example `api://.../access_as_user`) to Foundry audience token, configure:
+
+- `AzureAd:TenantId`
+- `AzureAd:ClientId`
+- `AzureAd:ClientSecret`
+- `AzureAd:Instance` (optional, default `https://login.microsoftonline.com/`)
 
 ## Run locally
 
@@ -36,18 +112,4 @@ Set these before running:
 dotnet run
 ```
 
-OpenAPI/Swagger metadata is available in Development mode.
-
-## Quick Postman test
-
-- Method: `POST`
-- URL: `http://localhost:5105/api/health-tips` (or the port shown by `dotnet run`)
-- Headers:
-  - `Content-Type: application/json`
-- Body (raw JSON):
-
-```json
-{
-  "message": "I want to improve my sleep. Give me 5 practical tips."
-}
-```
+OpenAPI metadata is available in Development mode.
