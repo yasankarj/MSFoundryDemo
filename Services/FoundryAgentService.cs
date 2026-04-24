@@ -1,18 +1,16 @@
 using Azure.Core;
 using Azure.Identity;
 using Microsoft.Identity.Client;
-using Microsoft.Extensions.Logging;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
 namespace FoundryHealthDemo.Services;
 
-public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration configuration, ILogger<FoundryAgentService> logger)
+public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration configuration)
 {
     private readonly HttpClient _httpClient = httpClient;
     private readonly IConfiguration _configuration = configuration;
-    private readonly ILogger<FoundryAgentService> _logger = logger;
     private static readonly TokenCredential AgentCredential = new DefaultAzureCredential();
 
     public static (string Type, string Message) ParseStructuredAgentResponse(string rawResponse)
@@ -135,8 +133,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
                 "Missing Foundry agent settings. Provide Foundry:ProjectEndpoint (or Foundry:Endpoint) and Foundry:HealthAgentID in appsettings, or AZURE_OPENAI_ENDPOINT and AZURE_FOUNDRY_AGENT_ID as environment variables.");
         }
 
-        var (accessToken, authSource) = await GetAgentAccessTokenAsync(agentAuthScope, incomingBearerToken, cancellationToken);
-        LogTokenDiagnostics(accessToken, authSource, agentAuthScope);
+        var accessToken = await GetAgentAccessTokenAsync(agentAuthScope, incomingBearerToken, cancellationToken);
         var normalizedEndpoint = endpoint.TrimEnd('/');
         var isProjectEndpoint = normalizedEndpoint.Contains("/api/projects/", StringComparison.OrdinalIgnoreCase);
         var baseUrl = isProjectEndpoint
@@ -173,8 +170,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
                 "Missing Foundry endpoint settings. Provide Foundry:ProjectEndpoint (or Foundry:Endpoint) in appsettings, or AZURE_OPENAI_ENDPOINT as an environment variable.");
         }
 
-        var (accessToken, authSource) = await GetAgentAccessTokenAsync(agentAuthScope, incomingBearerToken, cancellationToken);
-        LogTokenDiagnostics(accessToken, authSource, agentAuthScope);
+        var accessToken = await GetAgentAccessTokenAsync(agentAuthScope, incomingBearerToken, cancellationToken);
 
         var normalizedEndpoint = endpoint.TrimEnd('/');
         var isProjectEndpoint = normalizedEndpoint.Contains("/api/projects/", StringComparison.OrdinalIgnoreCase);
@@ -185,7 +181,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         return await GetThreadMessagesInternalAsync(baseUrl, apiVersion, accessToken, threadId, cancellationToken);
     }
 
-    private async Task<(string Token, string Source)> GetAgentAccessTokenAsync(string scope, string? incomingBearerToken, CancellationToken cancellationToken)
+    private async Task<string> GetAgentAccessTokenAsync(string scope, string? incomingBearerToken, CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(incomingBearerToken))
         {
@@ -195,18 +191,14 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
                 if (TryReadJwtClaims(normalizedIncomingToken, out var incomingAud, out _, out _) &&
                     string.Equals(incomingAud, "https://ai.azure.com", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogInformation("Foundry auth: incoming bearer token already targets https://ai.azure.com. Using pass-through token.");
-                    return (normalizedIncomingToken, "incoming-pass-through-ai-audience");
+                    return normalizedIncomingToken;
                 }
 
                 var oboToken = await TryGetOnBehalfOfTokenAsync(normalizedIncomingToken, scope, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(oboToken))
                 {
-                    return (oboToken, "obo");
+                    return oboToken;
                 }
-
-                _logger.LogWarning(
-                    "Foundry auth: incoming token audience is not https://ai.azure.com and OBO failed. Falling back to configured/default credential token acquisition.");
             }
         }
 
@@ -217,7 +209,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
 
         if (!string.IsNullOrWhiteSpace(configuredToken))
         {
-            return (NormalizeBearerToken(configuredToken), "configured-token");
+            return NormalizeBearerToken(configuredToken);
         }
 
         try
@@ -225,7 +217,7 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
             var token = await AgentCredential.GetTokenAsync(
                 new TokenRequestContext(new[] { scope }),
                 cancellationToken);
-            return (token.Token, "default-azure-credential");
+            return token.Token;
         }
         catch (Exception ex)
         {
@@ -265,14 +257,10 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
                 .AcquireTokenOnBehalfOf(new[] { scope }, new UserAssertion(incomingAccessToken))
                 .ExecuteAsync(cancellationToken);
 
-            _logger.LogInformation("Foundry auth: OBO token exchange succeeded for scope {Scope}.", scope);
             return result.AccessToken;
         }
-        catch (MsalServiceException ex)
+        catch (MsalServiceException)
         {
-            _logger.LogWarning(
-                "Foundry auth: OBO token exchange failed (code: {ErrorCode}). Falling back to pass-through token.",
-                ex.ErrorCode);
             return null;
         }
     }
@@ -287,26 +275,6 @@ public sealed class FoundryAgentService(HttpClient httpClient, IConfiguration co
         }
 
         return trimmed;
-    }
-
-    private void LogTokenDiagnostics(string token, string authSource, string scope)
-    {
-        if (!TryReadJwtClaims(token, out var aud, out var tid, out var expUtc))
-        {
-            _logger.LogWarning(
-                "Foundry auth source {AuthSource}. Token could not be parsed as JWT. Scope requested: {Scope}.",
-                authSource,
-                scope);
-            return;
-        }
-
-        _logger.LogInformation(
-            "Foundry auth source {AuthSource}. Token claims -> aud: {Audience}, tid: {TenantId}, expUtc: {ExpiryUtc}, scope: {Scope}.",
-            authSource,
-            aud ?? "<missing>",
-            tid ?? "<missing>",
-            expUtc?.ToString("O") ?? "<missing>",
-            scope);
     }
 
     private static bool TryReadJwtClaims(string token, out string? aud, out string? tid, out DateTimeOffset? expUtc)
